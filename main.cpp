@@ -91,39 +91,94 @@
     }
 
     Mat recoObject(Mat input, const std::vector<std::vector<ColorDistribution>>& all_col_hists, 
-                const std::vector<Vec3b>& colors, int bloc) {
-        Mat output = input.clone();
-        int height = input.rows;
-        int width = input.cols;
-        
-        for (int y = 0; y <= height - bloc; y += bloc) {
-            for (int x = 0; x <= width - bloc; x += bloc) {
-                Point pt1(x, y);
-                Point pt2(x + bloc, y + bloc);
+               const std::vector<Vec3b>& colors, int bloc, int groupSize) {
+    Mat output = input.clone();
+    int height = input.rows;
+    int width = input.cols;
+    
+    // Matrice pour marquer les labels des régions
+    Mat labels = Mat::zeros(height, width, CV_32S);
 
-                ColorDistribution block_cd = getColorDistribution(input, pt1, pt2);
-                float min_dist = FLT_MAX;
-                int closest_color_index = 0;
+    // Parcours des blocs, regroupés en groupes de 4x4 blocs
+    for (int y = 0; y <= height - bloc; y += bloc) {
+        for (int x = 0; x <= width - bloc; x += bloc) {
+            Point pt1(x, y);
+            Point pt2(x + bloc, y + bloc);
 
-                for (int i = 0; i < all_col_hists.size(); i++) {
-                    float dist = minDistance(block_cd, all_col_hists[i]);
-                    if (dist < min_dist) {
-                        min_dist = dist;
-                        closest_color_index = i;
-                    }
+            ColorDistribution block_cd = getColorDistribution(input, pt1, pt2);
+            float min_dist = FLT_MAX;
+            int closest_color_index = 0;
+
+            // Trouver le label le plus proche pour ce bloc
+            for (int i = 0; i < all_col_hists.size(); i++) {
+                float dist = minDistance(block_cd, all_col_hists[i]);
+                if (dist < min_dist) {
+                    min_dist = dist;
+                    closest_color_index = i;
                 }
+            }
 
-                Vec3b color = colors[closest_color_index];
-                for (int y_b = y; y_b < y + bloc; ++y_b) {
-                    for (int x_b = x; x_b < x + bloc; ++x_b) {
-                        output.at<Vec3b>(y_b, x_b) = color;
-                    }
+            // Attribuer le label du groupe à tous les pixels de ce bloc
+            Vec3b color = colors[closest_color_index];
+            for (int y_b = y; y_b < y + bloc; ++y_b) {
+                for (int x_b = x; x_b < x + bloc; ++x_b) {
+                    labels.at<int>(y_b, x_b) = closest_color_index;
+                    output.at<Vec3b>(y_b, x_b) = color;
                 }
             }
         }
-        
-        return output;
     }
+
+    // Appliquer Watershed pour la segmentation fine des objets (seulement sur les objets)
+    Mat markers = Mat::zeros(input.size(), CV_32S);
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            if (labels.at<int>(y, x) == 0) { // Fond
+                markers.at<int>(y, x) = -1;  // Fond marqué
+            } else {
+                markers.at<int>(y, x) = labels.at<int>(y, x); // Objet marqué
+            }
+        }
+    }
+
+    // Application de Watershed pour séparer les objets
+    watershed(input, markers);
+
+    // Appliquer une couleur pour visualiser les frontières
+    Mat output_watershed = output.clone();
+    output_watershed.setTo(Scalar(0, 0, 255), markers == -1); // Frontières en rouge
+
+    // Affichage de l'image avec watershed
+    return output_watershed;
+}
+
+
+void displayObjectName(Mat& image, const Vec3b& color, const string& objectName, int x, int y) {
+    // Convertir la couleur en format BGR
+    Scalar textColor = Scalar(255, 255, 255);  // Blanc pour le texte
+    Scalar boxColor = Scalar(0, 0, 0);  // Couleur de fond de la boîte, noire
+    
+    // Texte à afficher : nom de l'objet
+    string colorText = objectName;
+
+    // Calculer la taille du texte pour ajuster la boîte
+    int baseLine = 0;
+    Size textSize = getTextSize(colorText, FONT_HERSHEY_SIMPLEX, 0.4, 1, &baseLine);
+    
+    // Dessiner un rectangle pour la boîte autour du texte
+    Rect box(x, y, textSize.width + 40, textSize.height + 10);  // Un peu de marge autour du texte
+    rectangle(image, box, boxColor, FILLED);  // Dessiner le rectangle rempli
+    
+    // Ajouter le texte à l'intérieur de la boîte
+    putText(image, colorText, Point(x + 40, y + textSize.height + 5), FONT_HERSHEY_SIMPLEX, 0.4, textColor, 1);
+
+    // Ajouter une petite boîte colorée à gauche du texte
+    Rect colorBox(x + 10, y + 5, 20, 20);  // Petite boîte à côté du texte
+    rectangle(image, colorBox, Scalar(color[0], color[1], color[2]), FILLED);  // Boîte colorée
+}
+
+
+
 
     int main(int argc, char** argv) {
         Mat img_input;
@@ -167,16 +222,16 @@
             ColorDistribution cd = getColorDistribution(img_input, pt1, pt2);
             cv::rectangle(img_input, pt1, pt2, Scalar(255, 255, 255), 1);
             if (c == 'v')
-            {
-                Point gh(0, 0);
-                Point gb(width / 2, height);
-                Point dh(width / 2, 0);
-                Point db(width, height);
-                ColorDistribution cd_gh = getColorDistribution(img_input, gh, gb);
-                ColorDistribution cd_dh = getColorDistribution(img_input, dh, db);
-                float dist = cd_gh.distance(cd_dh);
-                cout << "Distance : " << dist << endl;
-            }
+        {
+            Point gh(0, 0);
+            Point gb(width / 2, height);
+            Point dh(width / 2, 0);
+            Point db(width, height);
+            ColorDistribution cd_gh = getColorDistribution(img_input, gh, gb);
+            ColorDistribution cd_dh = getColorDistribution(img_input, dh, db);
+            float dist = cd_gh.distance(cd_dh);
+            cout << "Distance : " << dist << endl;
+        }
 
             if (c == 'b') {
                 const int bbloc = 128;
@@ -203,14 +258,33 @@
 
             if (c == 'n') {
                 if (!col_hists_object.empty()) {
+                    // Ajouter l'objet à la liste des histogrammes de tous les objets
                     all_col_hists.push_back(col_hists_object);
-                    colors.push_back(Vec3b(rand() % 256, rand() % 256, rand() % 256));
+                    
+                    // Générer une couleur aléatoire pour l'objet
+                    Vec3b newColor(rand() % 256, rand() % 256, rand() % 256);
+                    colors.push_back(newColor);
+                    
+                    // Générer un nom d'objet (ici, on l'appelle simplement "Objet X")
+                    string objectName = "Objet " + to_string(all_col_hists.size());
+                    
+                    // Effacer les histogrammes de l'objet actuel
                     col_hists_object.clear();
+                    
                     cout << "Nouvel objet ajouté. Total d'objets : " << all_col_hists.size() - 1 << endl;
                 } else {
                     cout << "Pas d'échantillons pour cet objet. Utilisez 'a' pour ajouter des échantillons." << endl;
                 }
             }
+
+            // Afficher tous les objets ajoutés sur chaque frame
+            int y_offset = 10;  // Position initiale pour le premier objet
+            for (int i = 0; i < all_col_hists.size(); ++i) {
+                // Afficher chaque objet avec sa couleur et son nom
+                displayObjectName(img_input, colors[i], "Objet " + to_string(i + 1), 10, y_offset);
+                y_offset += 30;  // Espacer les objets affichés
+            }
+
 
             if (c == 'r' && !all_col_hists.empty()) {
                 recognition_mode = !recognition_mode;
@@ -218,7 +292,7 @@
             }
 
             if (recognition_mode) {
-                Mat reco = recoObject(img_input, all_col_hists, colors, 16);
+                Mat reco = recoObject(img_input, all_col_hists, colors, 16, 4);  // Bloc de 16x16, regroupé en 4x4
                 Mat gray;
                 cvtColor(img_input, gray, COLOR_BGR2GRAY);
                 cvtColor(gray, img_input, COLOR_GRAY2BGR);
